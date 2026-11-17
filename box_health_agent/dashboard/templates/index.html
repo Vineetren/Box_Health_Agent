@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Box Health Agent</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">ZF</div>
+        <div>
+          <h1>Box Health Agent</h1>
+          <p class="tagline">Real-time edge machine health · 5s metrics · 15s network probes</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span class="status-chip {{ health_status }}" id="status-chip">
+          <span class="status-dot"></span>
+          <span id="status-text">{{ health_status }}</span>
+        </span>
+        <span class="time-pill">Updated <span id="live-time">{{ server_time }}</span> · live <span id="poll-countdown">{{ poll_interval_sec }}</span>s · full <span id="countdown">{{ full_reload_sec }}</span>s</span>
+      </div>
+    </header>
+
+    <section class="kpi-strip">
+      <div class="kpi-card {% if snapshot.cpu_percent and snapshot.cpu_percent > 85 %}warn{% else %}accent{% endif %}" id="kpi-cpu-card">
+        <div class="kpi-label">CPU load</div>
+        <div class="kpi-row">
+          <div class="kpi-value" id="kpi-cpu">{% if snapshot.cpu_percent is not none %}{{ "%.1f"|format(snapshot.cpu_percent) }}<span style="font-size:0.9rem;font-weight:600">%</span>{% else %}—{% endif %}</div>
+          {% if snapshot.cpu_percent is not none %}
+          <div class="kpi-gauge" id="kpi-cpu-gauge" style="--pct: {{ [snapshot.cpu_percent, 100]|min }}"></div>
+          {% else %}
+          <div class="kpi-gauge" id="kpi-cpu-gauge" style="--pct: 0"></div>
+          {% endif %}
+        </div>
+        <div class="kpi-sub">Alert &gt; 85% for 60s</div>
+      </div>
+      <div class="kpi-card {% if snapshot.ram_percent and snapshot.ram_percent > 90 %}warn{% else %}accent{% endif %}">
+        <div class="kpi-label">Memory</div>
+        <div class="kpi-row">
+          <div class="kpi-value">{% if snapshot.ram_percent is not none %}{{ "%.1f"|format(snapshot.ram_percent) }}<span style="font-size:0.9rem;font-weight:600">%</span>{% else %}—{% endif %}</div>
+          {% if snapshot.ram_percent is not none %}
+          <div class="kpi-gauge" style="--pct: {{ [snapshot.ram_percent, 100]|min }}"></div>
+          {% endif %}
+        </div>
+        <div class="kpi-sub">Alert &gt; 90%</div>
+      </div>
+      <div class="kpi-card {% if snapshot.disk_percent and snapshot.disk_percent > 90 %}crit{% else %}accent{% endif %}" id="kpi-disk-card">
+        <div class="kpi-label">Disk {% if snapshot.disk_mount %}{{ snapshot.disk_mount }}{% else %}C:\{% endif %}</div>
+        <div class="kpi-row">
+          <div class="kpi-value" id="kpi-disk">{% if snapshot.disk_percent is not none %}{{ "%.1f"|format(snapshot.disk_percent) }}<span style="font-size:0.9rem;font-weight:600">%</span>{% else %}—{% endif %}</div>
+          {% if snapshot.disk_percent is not none %}
+          <div class="kpi-gauge" id="kpi-disk-gauge" style="--pct: {{ [snapshot.disk_percent, 100]|min }}"></div>
+          {% endif %}
+        </div>
+        <div class="kpi-sub">Alert &gt; 90% used</div>
+      </div>
+      <div class="kpi-card {% if open_alerts|length > 0 %}warn{% else %}ok{% endif %}" id="kpi-alerts-card">
+        <div class="kpi-label">Open alerts</div>
+        <div class="kpi-value" id="kpi-alerts">{{ open_alerts|length }}</div>
+        <div class="kpi-sub" id="kpi-alert-sub">{{ alert_critical }} critical · {{ alert_warn }} warning</div>
+      </div>
+      <div class="kpi-card {% if snapshot.uplink_ok and snapshot.internet_ok %}ok{% else %}crit{% endif %}">
+        <div class="kpi-label">Uplink</div>
+        <div class="kpi-value sm">
+          Gateway {% if snapshot.uplink_ok %}<span style="color:var(--ok)">OK</span>{% else %}<span style="color:var(--crit)">Fail</span>{% endif %}
+          · Internet {% if snapshot.internet_ok %}<span style="color:var(--ok)">OK</span>{% else %}<span style="color:var(--crit)">Fail</span>{% endif %}
+        </div>
+        <div class="kpi-sub">{% if gateway_ip %}Gateway {{ gateway_ip }}{% else %}Auto-detected gateway{% endif %}</div>
+      </div>
+      <div class="kpi-card accent">
+        <div class="kpi-label">Uptime</div>
+        <div class="kpi-value sm">
+          {% if snapshot.uptime_sec %}
+            {% set d = (snapshot.uptime_sec // 86400)|int %}
+            {% set h = ((snapshot.uptime_sec % 86400) // 3600)|int %}
+            {{ d }}d {{ h }}h
+          {% else %}—{% endif %}
+        </div>
+        <div class="kpi-sub">Since last boot</div>
+      </div>
+    </section>
+
+    <div class="dashboard-grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Active alerts</h2>
+          <span class="panel-badge" id="alert-open-badge">{{ open_alerts|length }} open</span>
+        </div>
+        <div class="severity-row">
+          <div class="sev crit"><span class="n" id="alert-n-crit">{{ alert_critical }}</span><span class="l">Critical</span></div>
+          <div class="sev warn"><span class="n" id="alert-n-warn">{{ alert_warn }}</span><span class="l">Warning</span></div>
+          <div class="sev ok"><span class="n" id="alert-n-ok">{% if open_alerts|length == 0 %}✓{% else %}—{% endif %}</span><span class="l">Clear</span></div>
+        </div>
+        <div class="alert-list" id="alert-list" {% if not open_alerts %}hidden{% endif %}>
+          {% for a in open_alerts %}
+          <article class="alert-item {% if a.rule in ['network_lost', 'process_died', 'disk_high'] %}critical{% endif %}">
+            <div class="title">{{ rule_labels.get(a.rule, a.rule) }}</div>
+            <div class="meta">
+              {{ a.subject }}
+              {% if a.details.pid %} · PID {{ a.details.pid }}{% endif %}
+              · {{ fmt_ts(a.opened_at) }}
+              {% if a.peak_value is not none %} · peak {{ "%.1f"|format(a.peak_value) }}{% endif %}
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+        <p class="empty" id="alert-empty" {% if open_alerts %}hidden{% endif %}>{{ health_blurb }}</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Network probes</h2>
+          <span class="panel-badge">Latest run</span>
+        </div>
+        <div class="probe-grid">
+          {% for key, p in probe_latest.items() %}
+          {% if key != 'packet_loss_estimate' %}
+          <div class="probe-line">
+            <span class="name"><span class="pdot {% if p.success %}ok{% endif %}"></span>{{ key }}</span>
+            <span class="lat">{% if p.success %}{% if p.latency_ms is not none %}{{ "%.0f"|format(p.latency_ms) }} ms{% else %}OK{% endif %}{% else %}Failed{% endif %}</span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% if watch_list %}
+        <div class="watch-note">
+          Watching:
+          {% for w in watch_list %}<code>{{ w }}</code>{% if not loop.last %} {% endif %}{% endfor %}
+          — alerts if a watched process exits.
+        </div>
+        {% endif %}
+      </section>
+    </div>
+
+    <div class="charts-primary">
+      <div class="chart-panel featured">
+        <h3>CPU · last hour</h3>
+        <div class="chart-wrap"><canvas id="cpu1h"></canvas></div>
+      </div>
+      <div class="chart-panel featured">
+        <h3>Memory · last hour</h3>
+        <div class="chart-wrap"><canvas id="ram1h"></canvas></div>
+      </div>
+    </div>
+    <div class="charts-secondary">
+      <div class="chart-panel">
+        <h3>CPU · 24 hours</h3>
+        <div class="chart-wrap"><canvas id="cpu24h"></canvas></div>
+      </div>
+      <div class="chart-panel">
+        <h3>Memory · 24 hours</h3>
+        <div class="chart-wrap"><canvas id="ram24h"></canvas></div>
+      </div>
+    </div>
+
+    <section class="panel table-panel">
+      <div class="panel-head">
+        <h2>Top processes</h2>
+        <span class="panel-badge">By CPU (% of machine)</span>
+      </div>
+      <div class="scroll-x">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>PID</th>
+              <th>Process</th>
+              <th>CPU</th>
+              <th>RAM</th>
+              <th>State</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in top_procs %}
+            <tr>
+              <td class="num">{{ p.pid }}</td>
+              <td>{{ p.name }}</td>
+              <td class="num">{{ "%.1f"|format(p.cpu_percent or 0) }}%</td>
+              <td class="num">{% if p.mem_rss_mb is not none %}{{ "%.0f"|format(p.mem_rss_mb) }} MB{% else %}—{% endif %}</td>
+              <td>{{ p.status or '—' }}</td>
+              <td>
+                {% if p.flag_high_cpu %}<span class="tag flagged">cpu</span>{% endif %}
+                {% if p.flag_high_mem %}<span class="tag flagged">ram</span>{% endif %}
+                {% if p.watched %}<span class="tag watched">watch</span>{% endif %}
+                {% if p.flag_zombie %}<span class="tag bad">zombie</span>{% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="empty">Waiting for first 5s process sample…</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel table-panel">
+      <div class="panel-head">
+        <h2>Resolved alerts</h2>
+        <span class="panel-badge">Recent history</span>
+      </div>
+      <div class="scroll-x">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Alert</th>
+              <th>Subject</th>
+              <th>Opened</th>
+              <th>Closed</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in closed_alerts[:12] %}
+            <tr>
+              <td>{{ rule_labels.get(a.rule, a.rule) }}</td>
+              <td>{{ a.subject }}</td>
+              <td class="num">{{ fmt_ts(a.opened_at) }}</td>
+              <td class="num">{{ fmt_ts(a.closed_at) }}</td>
+              <td class="num">{% if a.closed_at %}{{ "%.0f"|format(a.closed_at - a.opened_at) }}s{% else %}—{% endif %}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="empty">No closed alerts yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <footer class="footer-bar">
+        <span>API</span>
+        <code>/health</code>
+        <code>/metrics</code>
+        <code>/alerts</code>
+        <code>/processes</code>
+      </footer>
+    </section>
+  </div>
+
+  <script>
+    const C = {
+      line: '#3d8bfd',
+      line2: '#22c55e',
+      grid: 'rgba(42, 53, 68, 0.6)',
+      ticks: '#8b98a8',
+    };
+
+    function chartSeries(points, color) {
+      return {
+        labels: points.map(p => new Date(p.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+        datasets: [{
+          data: points.map(p => p.value),
+          borderColor: color,
+          backgroundColor: color + '1a',
+          fill: true,
+          tension: 0.35,
+          pointRadius: 0,
+          borderWidth: 2,
+        }],
+      };
+    }
+
+    const baseOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: {
+          min: 0,
+          max: 100,
+          grid: { color: C.grid },
+          ticks: { color: C.ticks, font: { size: 10 } },
+        },
+        x: {
+          grid: { display: false },
+          ticks: { color: C.ticks, maxTicksLimit: 6, font: { size: 10 } },
+        },
+      },
+      plugins: { legend: { display: false } },
+    };
+
+    new Chart(document.getElementById('cpu1h'), { type: 'line', data: chartSeries({{ cpu_1h | tojson }}, C.line), options: baseOpts });
+    new Chart(document.getElementById('ram1h'), { type: 'line', data: chartSeries({{ ram_1h | tojson }}, C.line2), options: baseOpts });
+    new Chart(document.getElementById('cpu24h'), { type: 'line', data: chartSeries({{ cpu_24h | tojson }}, C.line), options: baseOpts });
+    new Chart(document.getElementById('ram24h'), { type: 'line', data: chartSeries({{ ram_24h | tojson }}, C.line2), options: baseOpts });
+
+    const POLL_SEC = {{ poll_interval_sec }};
+    const FULL_RELOAD_SEC = {{ full_reload_sec }};
+    const RULE_LABELS = {{ rule_labels | tojson }};
+    const CRITICAL_RULES = new Set(["network_lost", "process_died", "disk_high"]);
+    const HEALTH_BLURB = {
+      ok: "All monitored checks are within limits. No open alerts.",
+      warn: "One or more warning conditions are active. Review open alerts below.",
+      critical: "Critical issues detected — machine or uplink may be impaired.",
+    };
+
+    function formatTs(ts) {
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    function formatAlertTs(ts) {
+      const d = new Date(ts * 1000);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+
+    function esc(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function renderOpenAlerts(alerts, status) {
+      const list = document.getElementById("alert-list");
+      const empty = document.getElementById("alert-empty");
+      const badge = document.getElementById("alert-open-badge");
+      const nCrit = document.getElementById("alert-n-crit");
+      const nWarn = document.getElementById("alert-n-warn");
+      const nOk = document.getElementById("alert-n-ok");
+      if (!list || !Array.isArray(alerts)) return;
+      const crit = alerts.filter((a) => CRITICAL_RULES.has(a.rule)).length;
+      const warn = alerts.length - crit;
+      if (badge) badge.textContent = `${alerts.length} open`;
+      if (nCrit) nCrit.textContent = String(crit);
+      if (nWarn) nWarn.textContent = String(warn);
+      if (nOk) nOk.textContent = alerts.length === 0 ? "✓" : "—";
+      const sub = document.getElementById("kpi-alert-sub");
+      if (sub) sub.textContent = `${crit} critical · ${warn} warning`;
+      const card = document.getElementById("kpi-alerts-card");
+      if (card) {
+        card.classList.toggle("warn", alerts.length > 0);
+        card.classList.toggle("ok", alerts.length === 0);
+      }
+      if (!alerts.length) {
+        list.hidden = true;
+        list.innerHTML = "";
+        if (empty) {
+          empty.hidden = false;
+          empty.textContent = HEALTH_BLURB[status] || HEALTH_BLURB.ok;
+        }
+        return;
+      }
+      list.hidden = false;
+      if (empty) empty.hidden = true;
+      list.innerHTML = alerts.map((a) => {
+        const title = RULE_LABELS[a.rule] || a.rule;
+        const pid = a.details && a.details.pid != null ? ` · PID ${esc(a.details.pid)}` : "";
+        const peak = a.peak_value != null ? ` · peak ${Number(a.peak_value).toFixed(1)}` : "";
+        const klass = CRITICAL_RULES.has(a.rule) ? "alert-item critical" : "alert-item";
+        return `<article class="${klass}"><div class="title">${esc(title)}</div><div class="meta">${esc(a.subject || "")}${pid} · ${formatAlertTs(a.opened_at)}${peak}</div></article>`;
+      }).join("");
+    }
+
+    async function pollHealth() {
+      try {
+        const res = await fetch('/health', { cache: 'no-store' });
+        const h = await res.json();
+        const cpu = h.snapshot?.cpu_percent;
+        const disk = h.snapshot?.disk_percent;
+        const elCpu = document.getElementById('kpi-cpu');
+        const elGauge = document.getElementById('kpi-cpu-gauge');
+        const elCard = document.getElementById('kpi-cpu-card');
+        if (elCpu && cpu != null) {
+          elCpu.innerHTML = `${cpu.toFixed(1)}<span style="font-size:0.9rem;font-weight:600">%</span>`;
+          if (elGauge) elGauge.style.setProperty('--pct', Math.min(100, cpu));
+          if (elCard) {
+            elCard.classList.toggle('warn', cpu > 85);
+            elCard.classList.toggle('accent', cpu <= 85);
+          }
+        }
+        const st = document.getElementById('status-chip');
+        const stTxt = document.getElementById('status-text');
+        if (st && stTxt && h.status) {
+          st.classList.remove('ok', 'warn', 'critical');
+          st.classList.add(h.status);
+          stTxt.textContent = h.status;
+        }
+        const elDisk = document.getElementById('kpi-disk');
+        const elDiskGauge = document.getElementById('kpi-disk-gauge');
+        const elDiskCard = document.getElementById('kpi-disk-card');
+        if (elDisk && disk != null) {
+          elDisk.innerHTML = `${disk.toFixed(1)}<span style="font-size:0.9rem;font-weight:600">%</span>`;
+          if (elDiskGauge) elDiskGauge.style.setProperty('--pct', Math.min(100, disk));
+          if (elDiskCard) {
+            elDiskCard.classList.toggle('crit', disk > 90);
+            elDiskCard.classList.toggle('accent', disk <= 90);
+          }
+        }
+        const elAlerts = document.getElementById('kpi-alerts');
+        if (elAlerts && h.open_count != null) elAlerts.textContent = String(h.open_count);
+        if (Array.isArray(h.open_alerts)) renderOpenAlerts(h.open_alerts, h.status);
+        const lt = document.getElementById('live-time');
+        if (lt && h.ts) lt.textContent = formatTs(h.ts);
+      } catch (e) {
+        console.warn('poll failed', e);
+      }
+    }
+
+    setInterval(pollHealth, POLL_SEC * 1000);
+    pollHealth();
+
+    const cd = document.getElementById('countdown');
+    const pcd = document.getElementById('poll-countdown');
+    let fullLeft = FULL_RELOAD_SEC;
+    let pollLeft = POLL_SEC;
+    setInterval(() => {
+      pollLeft -= 1;
+      fullLeft -= 1;
+      if (pollLeft <= 0) {
+        pollLeft = POLL_SEC;
+        pollHealth();
+      }
+      if (pcd) pcd.textContent = String(Math.max(0, pollLeft));
+      if (fullLeft <= 0) {
+        location.reload();
+        return;
+      }
+      if (cd) cd.textContent = String(fullLeft);
+    }, 1000);
+  </script>
+</body>
+</html>

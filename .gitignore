@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.pytest_cache/
+*.db
+
+# Local demo and recording helpers, not part of the submission
+scripts/
+tests/test_cpu_burn_load.py

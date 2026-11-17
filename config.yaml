@@ -1,0 +1,47 @@
+# Box Health Agent configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+sampling:
+  metrics_interval_sec: 5
+  probe_interval_sec: 15
+
+database:
+  path: "data/health_agent.db"
+  retention_days: 7
+
+alerts:
+  cpu_high_percent: 85
+  cpu_high_duration_sec: 60
+  ram_high_percent: 90
+  disk_high_percent: 90
+  network_failures_before_alert: 3
+  zombie_min_duration_sec: 30
+  memory_climb_samples: 10
+  memory_climb_rising_count: 9
+  memory_climb_min_mb: 50
+  # Optional: mounts to ignore for disk_high (empty = alert on all drives, e.g. C:\ when >90%)
+  disk_high_exclude_mounts: []
+
+process_watch:
+  # Names or command substrings to watch for unexpected exit
+  watch_list:
+    - "camera_daemon"
+    - "edge_uploader"
+
+process_flags:
+  cpu_percent: 50
+  mem_mb: 1024
+
+network_probes:
+  # Leave empty to auto-detect from ipconfig / ip route; override if needed
+  gateway_host: ""
+  dns_host: "google.com"
+  tcp_host: "1.1.1.1"
+  tcp_port: 53
+  internet_ping_host: "8.8.8.8"
+  timeouts:
+    dns_sec: 3
+    tcp_sec: 3
+    ping_sec: 2
